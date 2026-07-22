@@ -12,8 +12,9 @@ Lightweight ops bridge — not a full observability platform.
 
 | Path | Auth | Description |
 |------|------|-------------|
-| `GET /api/v1/gateway-access/stream` | Bearer JWT | SSE: gateway events + host metrics |
+| `GET /api/v1/gateway-access/stream` | Bearer JWT | SSE: gateway events + host metrics + traffic |
 | `GET /api/v1/gateway-access/recent` | Bearer JWT | Last ~50 gateway events (JSON) |
+| `GET /api/v1/gateway-access/stats` | Bearer JWT | Ingest RPS + 20s buckets (not limited by ring) |
 | `GET /api/v1/host-metrics` | Bearer JWT | One-shot host sample (JSON) |
 | `GET /healthz` | none | Liveness |
 
@@ -23,7 +24,10 @@ Lightweight ops bridge — not a full observability platform.
 |----------|---------|
 | `snapshot` | Gateway request history on connect |
 | `gateway.request.completed` | Live gateway request |
+| `gateway.traffic` | Ingest rate (~every 1s): `rps`, `peakRps`, `buckets[20]` |
 | `host.metrics` | Host CPU/RAM/load (~every 2s) |
+
+RPS/traffic is counted **as Kafka messages are consumed**, so a 1000/s burst shows ~1000 on the meter even though the live list only keeps ~50 rows.
 
 ### Example `host.metrics`
 

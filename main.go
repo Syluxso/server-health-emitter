@@ -128,6 +128,110 @@ type HostMetrics struct {
 	Load15         float64 `json:"load15"`
 }
 
+const trafficWindowSecs = 20
+
+// TrafficStats is ingest rate as seen by this consumer (not limited by the recent ring).
+type TrafficStats struct {
+	Type    string `json:"type"`
+	Time    string `json:"time"`
+	Rps     float64 `json:"rps"`     // last fully completed 1s bucket
+	PeakRps float64 `json:"peakRps"` // max 1s bucket in the window
+	Total   uint64  `json:"total"`   // consumed since process start
+	Buckets []int   `json:"buckets"` // length 20, oldest → newest (counts per second)
+}
+
+// TrafficTracker counts Kafka consumes into 1-second buckets.
+type TrafficTracker struct {
+	mu      sync.Mutex
+	buckets [trafficWindowSecs]int
+	epoch   int64 // unix second of buckets[0]
+	total   uint64
+	peak    int
+}
+
+func NewTrafficTracker() *TrafficTracker {
+	return &TrafficTracker{epoch: time.Now().Unix()}
+}
+
+func (t *TrafficTracker) Add(n int) {
+	if n <= 0 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	nowSec := time.Now().Unix()
+	t.alignLocked(nowSec)
+	idx := int(nowSec - t.epoch)
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= trafficWindowSecs {
+		idx = trafficWindowSecs - 1
+	}
+	t.buckets[idx] += n
+	t.total += uint64(n)
+	if t.buckets[idx] > t.peak {
+		t.peak = t.buckets[idx]
+	}
+}
+
+func (t *TrafficTracker) alignLocked(nowSec int64) {
+	if t.epoch == 0 {
+		t.epoch = nowSec
+		return
+	}
+	shift := int(nowSec - t.epoch)
+	if shift <= 0 {
+		return
+	}
+	if shift >= trafficWindowSecs {
+		for i := range t.buckets {
+			t.buckets[i] = 0
+		}
+		t.epoch = nowSec
+		return
+	}
+	copy(t.buckets[:], t.buckets[shift:])
+	for i := trafficWindowSecs - shift; i < trafficWindowSecs; i++ {
+		t.buckets[i] = 0
+	}
+	t.epoch += int64(shift)
+}
+
+func (t *TrafficTracker) Snapshot() TrafficStats {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	now := time.Now().Unix()
+	t.alignLocked(now)
+
+	out := make([]int, trafficWindowSecs)
+	copy(out, t.buckets[:])
+
+	// Prefer previous completed second; fall back to current bucket while a burst is in flight.
+	rps := 0.0
+	if trafficWindowSecs >= 2 {
+		rps = float64(out[trafficWindowSecs-2])
+	}
+	if rps == 0 {
+		rps = float64(out[trafficWindowSecs-1])
+	}
+	windowPeak := 0
+	for _, c := range out {
+		if c > windowPeak {
+			windowPeak = c
+		}
+	}
+
+	return TrafficStats{
+		Type:    "gateway.traffic",
+		Time:    time.Now().UTC().Format(time.RFC3339Nano),
+		Rps:     rps,
+		PeakRps: float64(windowPeak),
+		Total:   t.total,
+		Buckets: out,
+	}
+}
+
 type cpuSample struct {
 	idle  uint64
 	total uint64
@@ -276,6 +380,7 @@ func main() {
 
 	ring := NewRing(50)
 	hub := NewHub()
+	traffic := NewTrafficTracker()
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -312,6 +417,7 @@ func main() {
 			if len(m.Value) == 0 || !json.Valid(m.Value) {
 				continue
 			}
+			traffic.Add(1)
 			ring.Add(m.Value)
 			hub.Broadcast(OutMsg{Event: "gateway.request.completed", Data: append([]byte(nil), m.Value...)})
 		}
@@ -339,12 +445,32 @@ func main() {
 		}
 	}()
 
+	// Traffic stats ticker (1s) — accurate RPS even when ring only keeps 50 events
+	go func() {
+		t := time.NewTicker(time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				stats := traffic.Snapshot()
+				b, err := json.Marshal(stats)
+				if err != nil {
+					continue
+				}
+				hub.Broadcast(OutMsg{Event: "gateway.traffic", Data: b})
+			}
+		}
+	}()
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"UP"}`))
 	})
 	mux.HandleFunc("/api/v1/gateway-access/recent", withCORS(corsOrigins, withJWT(k, handleRecent(ring))))
+	mux.HandleFunc("/api/v1/gateway-access/stats", withCORS(corsOrigins, withJWT(k, handleTrafficStats(traffic))))
 	mux.HandleFunc("/api/v1/gateway-access/stream", withCORS(corsOrigins, withJWT(k, handleStream(hub, ring))))
 	mux.HandleFunc("/api/v1/host-metrics", withCORS(corsOrigins, withJWT(k, handleHostMetrics())))
 
@@ -420,6 +546,17 @@ func handleRecent(ring *Ring) http.HandlerFunc {
 			"count":  len(snap),
 			"events": snap,
 		})
+	}
+}
+
+func handleTrafficStats(traffic *TrafficTracker) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(traffic.Snapshot())
 	}
 }
 
