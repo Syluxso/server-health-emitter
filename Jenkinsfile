@@ -8,12 +8,6 @@ pipeline {
     }
 
     stages {
-        stage('Checkout') {
-            steps {
-                checkout scm
-            }
-        }
-
         stage('Build') {
             steps {
                 sh '''
@@ -30,8 +24,10 @@ pipeline {
                 sh '''
                     set -e
                     sudo mkdir -p "${DEPLOY_DIR}"
-                    sudo cp "./${BINARY_NAME}" "${DEPLOY_DIR}/${BINARY_NAME}"
-                    sudo chmod 755 "${DEPLOY_DIR}/${BINARY_NAME}"
+                    # Cannot overwrite a running ELF in place (ETXTBSY). Write beside it, then atomic replace.
+                    sudo cp "./${BINARY_NAME}" "${DEPLOY_DIR}/${BINARY_NAME}.new"
+                    sudo chmod 755 "${DEPLOY_DIR}/${BINARY_NAME}.new"
+                    sudo mv -f "${DEPLOY_DIR}/${BINARY_NAME}.new" "${DEPLOY_DIR}/${BINARY_NAME}"
                     sudo chown root:root "${DEPLOY_DIR}/${BINARY_NAME}"
                     if [ -f ./start.sh ]; then
                         sudo cp ./start.sh "${DEPLOY_DIR}/start.sh"
