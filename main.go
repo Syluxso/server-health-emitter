@@ -132,25 +132,23 @@ const trafficWindowSecs = 20
 
 // TrafficStats is ingest rate as seen by this consumer (not limited by the recent ring).
 type TrafficStats struct {
-	Type    string `json:"type"`
-	Time    string `json:"time"`
+	Type    string  `json:"type"`
+	Time    string  `json:"time"`
 	Rps     float64 `json:"rps"`     // last fully completed 1s bucket
 	PeakRps float64 `json:"peakRps"` // max 1s bucket in the window
 	Total   uint64  `json:"total"`   // consumed since process start
 	Buckets []int   `json:"buckets"` // length 20, oldest → newest (counts per second)
 }
 
-// TrafficTracker counts Kafka consumes into 1-second buckets.
+// TrafficTracker counts Kafka consumes by unix second, then projects a 20s window.
 type TrafficTracker struct {
-	mu      sync.Mutex
-	buckets [trafficWindowSecs]int
-	epoch   int64 // unix second of buckets[0]
-	total   uint64
-	peak    int
+	mu    sync.Mutex
+	bySec map[int64]int
+	total uint64
 }
 
 func NewTrafficTracker() *TrafficTracker {
-	return &TrafficTracker{epoch: time.Now().Unix()}
+	return &TrafficTracker{bySec: make(map[int64]int)}
 }
 
 func (t *TrafficTracker) Add(n int) {
@@ -159,55 +157,35 @@ func (t *TrafficTracker) Add(n int) {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	nowSec := time.Now().Unix()
-	t.alignLocked(nowSec)
-	idx := int(nowSec - t.epoch)
-	if idx < 0 {
-		idx = 0
-	}
-	if idx >= trafficWindowSecs {
-		idx = trafficWindowSecs - 1
-	}
-	t.buckets[idx] += n
+	sec := time.Now().Unix()
+	t.bySec[sec] += n
 	t.total += uint64(n)
-	if t.buckets[idx] > t.peak {
-		t.peak = t.buckets[idx]
-	}
+	t.pruneLocked(sec)
 }
 
-func (t *TrafficTracker) alignLocked(nowSec int64) {
-	if t.epoch == 0 {
-		t.epoch = nowSec
-		return
-	}
-	shift := int(nowSec - t.epoch)
-	if shift <= 0 {
-		return
-	}
-	if shift >= trafficWindowSecs {
-		for i := range t.buckets {
-			t.buckets[i] = 0
+func (t *TrafficTracker) pruneLocked(nowSec int64) {
+	cutoff := nowSec - int64(trafficWindowSecs) // keep a little slack beyond the visible window
+	for sec := range t.bySec {
+		if sec < cutoff {
+			delete(t.bySec, sec)
 		}
-		t.epoch = nowSec
-		return
 	}
-	copy(t.buckets[:], t.buckets[shift:])
-	for i := trafficWindowSecs - shift; i < trafficWindowSecs; i++ {
-		t.buckets[i] = 0
-	}
-	t.epoch += int64(shift)
 }
 
 func (t *TrafficTracker) Snapshot() TrafficStats {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	now := time.Now().Unix()
-	t.alignLocked(now)
+	t.pruneLocked(now)
 
 	out := make([]int, trafficWindowSecs)
-	copy(out, t.buckets[:])
+	// oldest → newest: now-19 .. now
+	for i := 0; i < trafficWindowSecs; i++ {
+		sec := now - int64(trafficWindowSecs-1-i)
+		out[i] = t.bySec[sec]
+	}
 
-	// Prefer previous completed second; fall back to current bucket while a burst is in flight.
+	// Prefer previous completed second; fall back to current while a burst is in flight.
 	rps := 0.0
 	if trafficWindowSecs >= 2 {
 		rps = float64(out[trafficWindowSecs-2])
