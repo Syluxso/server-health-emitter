@@ -8,6 +8,8 @@ Tiny Go service for Byzantine Admin:
 
 Lightweight ops bridge — not a full observability platform.
 
+**Admin integration contract:** [docs/ADMIN-INTEGRATION.md](docs/ADMIN-INTEGRATION.md)
+
 ## Endpoints
 
 | Path | Auth | Description |
@@ -97,6 +99,12 @@ Public URL: https://api.byzantineapp.dev/ops/...
 nginx: `location /ops/` → `http://127.0.0.1:8097/`
 
 Kafka consumer group: **`admin-gateway-sse`** (do not reuse for other services).
+
+### Jenkins
+
+Root [`Jenkinsfile`](Jenkinsfile): `go build` → copy binary (+ `start.sh`) to `/opt/services/admin-gateway-sse/` → `supervisorctl restart admin-gateway-sse`.
+
+Agent needs **Go** on `PATH` and sudoers for mkdir/cp/chown/supervisorctl (same pattern as other Byz services). Point a Pipeline job at this repo / `Jenkinsfile`.
 
 ## Public Admin URLs (Byzantine)
 

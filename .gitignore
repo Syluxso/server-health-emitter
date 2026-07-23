@@ -1,0 +1,15 @@
+# binaries
+admin-gateway-sse
+events-sse
+*.exe
+*.test
+/bin/
+/dist/
+
+# ide / os
+.idea/
+.vscode/
+*.swp
+.DS_Store
+server-health-emitter
+admin-gateway-sse
