@@ -102,9 +102,30 @@ Kafka consumer group: **`admin-gateway-sse`** (do not reuse for other services).
 
 ### Jenkins
 
-Root [`Jenkinsfile`](Jenkinsfile): `go build` → copy binary (+ `start.sh`) to `/opt/services/admin-gateway-sse/` → `supervisorctl restart admin-gateway-sse`.
+Root [`Jenkinsfile`](Jenkinsfile): `go build` → stop service → copy binary (+ `start.sh`) → start `admin-gateway-sse`.
 
-Agent needs **Go** on `PATH` and sudoers for mkdir/cp/chown/supervisorctl (same pattern as other Byz services). Point a Pipeline job at this repo / `Jenkinsfile`.
+Agent needs **Go** on `PATH`. On the Linode host, add NOPASSWD sudoers for Jenkins (as root):
+
+```bash
+# /etc/sudoers.d/jenkins-deploy-admin-gateway-sse
+jenkins ALL=(root) NOPASSWD: /usr/bin/mkdir -p /opt/services/admin-gateway-sse
+jenkins ALL=(root) NOPASSWD: /usr/bin/cp /var/lib/jenkins/workspace/Go\ Server\ Health/admin-gateway-sse /opt/services/admin-gateway-sse/admin-gateway-sse
+jenkins ALL=(root) NOPASSWD: /usr/bin/cp /var/lib/jenkins/workspace/Go\ Server\ Health/start.sh /opt/services/admin-gateway-sse/start.sh
+jenkins ALL=(root) NOPASSWD: /usr/bin/chmod 755 /opt/services/admin-gateway-sse/admin-gateway-sse
+jenkins ALL=(root) NOPASSWD: /usr/bin/chmod 755 /opt/services/admin-gateway-sse/start.sh
+jenkins ALL=(root) NOPASSWD: /usr/bin/chown root\:root /opt/services/admin-gateway-sse/admin-gateway-sse
+jenkins ALL=(root) NOPASSWD: /usr/bin/chown root\:root /opt/services/admin-gateway-sse/start.sh
+jenkins ALL=(root) NOPASSWD: /usr/bin/supervisorctl reread
+jenkins ALL=(root) NOPASSWD: /usr/bin/supervisorctl update admin-gateway-sse
+jenkins ALL=(root) NOPASSWD: /usr/bin/supervisorctl stop admin-gateway-sse
+jenkins ALL=(root) NOPASSWD: /usr/bin/supervisorctl start admin-gateway-sse
+jenkins ALL=(root) NOPASSWD: /usr/bin/supervisorctl restart admin-gateway-sse
+jenkins ALL=(root) NOPASSWD: /usr/bin/supervisorctl status admin-gateway-sse
+```
+
+Then: `chmod 440 /etc/sudoers.d/jenkins-deploy-admin-gateway-sse` and `visudo -c`.
+
+Point a Pipeline job at this repo / `Jenkinsfile`. Workspace name in the `cp` lines must match the Jenkins job name (spaces escaped).
 
 ## Public Admin URLs (Byzantine)
 
